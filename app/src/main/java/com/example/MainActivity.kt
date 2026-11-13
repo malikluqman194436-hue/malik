@@ -80,15 +80,22 @@ class MainActivity : ComponentActivity() {
   override fun onResume() {
     super.onResume()
     gameWebView?.onResume()
+    gameWebView?.resumeTimers()
   }
 
   override fun onPause() {
-    super.onPause()
+    gameWebView?.pauseTimers()
     gameWebView?.onPause()
+    super.onPause()
   }
 
   override fun onDestroy() {
-    gameWebView?.destroy()
+    gameWebView?.let { wv ->
+      wv.stopLoading()
+      (wv.parent as? ViewGroup)?.removeView(wv)
+      wv.removeAllViews()
+      wv.destroy()
+    }
     gameWebView = null
     super.onDestroy()
   }
@@ -102,16 +109,18 @@ class AdMobController(private val activity: Activity) {
   private var isLoadingInterstitial = false
 
   fun initialize() {
-    runCatching {
-      MobileAds.initialize(activity) {
-        mainHandler.post {
-          loadRewardedAd()
-          loadInterstitialAd()
+    Thread {
+      runCatching {
+        MobileAds.initialize(activity) {
+          mainHandler.post {
+            loadRewardedAd()
+            loadInterstitialAd()
+          }
         }
+      }.onFailure { err ->
+        Log.w("AdMobController", "MobileAds init skipped: ${err.message}")
       }
-    }.onFailure { err ->
-      Log.w("AdMobController", "MobileAds init skipped: ${err.message}")
-    }
+    }.start()
   }
 
   fun isRewardedReady(): Boolean = rewardedAd != null
@@ -326,6 +335,7 @@ fun SkyCarGameView(
         ViewGroup.LayoutParams.MATCH_PARENT
       )
       setBackgroundColor(Color.parseColor("#070D19"))
+      setLayerType(View.LAYER_TYPE_HARDWARE, null)
       isVerticalScrollBarEnabled = false
       isHorizontalScrollBarEnabled = false
       overScrollMode = View.OVER_SCROLL_NEVER
