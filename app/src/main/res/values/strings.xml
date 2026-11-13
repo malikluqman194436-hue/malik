@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Thorn Rush</string>
+    <!-- Replace these official Google AdMob test IDs with your live AdMob IDs before Play Store release -->
+    <string name="admob_app_id">ca-app-pub-3940256099942544~3347511713</string>
+    <string name="admob_interstitial_id">ca-app-pub-3940256099942544/1033173712</string>
+    <string name="admob_rewarded_id">ca-app-pub-3940256099942544/5224354917</string>
+</resources>
