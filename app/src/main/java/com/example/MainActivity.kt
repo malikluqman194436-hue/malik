@@ -4,12 +4,23 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -22,6 +33,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -55,6 +69,7 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
+    applyImmersiveFullscreen()
     adController = AdMobController(this)
     adController.initialize()
 
@@ -75,10 +90,38 @@ class MainActivity : ComponentActivity() {
         }
       }
     }
+    window.decorView.post { applyImmersiveFullscreen() }
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) {
+      applyImmersiveFullscreen()
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun applyImmersiveFullscreen() {
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      window.attributes = window.attributes.apply {
+        layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        } else {
+          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+      }
+    }
+    window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+    val controller = WindowInsetsControllerCompat(window, window.decorView)
+    controller.systemBarsBehavior =
+      WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    controller.hide(WindowInsetsCompat.Type.systemBars())
   }
 
   override fun onResume() {
     super.onResume()
+    applyImmersiveFullscreen()
     gameWebView?.onResume()
     gameWebView?.resumeTimers()
   }
@@ -109,79 +152,16 @@ class AdMobController(private val activity: Activity) {
   private var isLoadingInterstitial = false
 
   fun initialize() {
-    Thread {
-      runCatching {
-        MobileAds.initialize(activity) {
-          mainHandler.post {
-            loadRewardedAd()
-            loadInterstitialAd()
-          }
-        }
-      }.onFailure { err ->
-        Log.w("AdMobController", "MobileAds init skipped: ${err.message}")
-      }
-    }.start()
+    // Test ads disabled until real ad integration is configured
   }
 
-  fun isRewardedReady(): Boolean = rewardedAd != null
+  fun isRewardedReady(): Boolean = false
 
-  fun isInterstitialReady(): Boolean = interstitialAd != null
+  fun isInterstitialReady(): Boolean = false
 
-  fun loadRewardedAd() {
-    if (rewardedAd != null || isLoadingRewarded) return
-    isLoadingRewarded = true
-    val unitId = activity.getString(R.string.admob_rewarded_id)
-    runCatching {
-      RewardedAd.load(
-        activity,
-        unitId,
-        AdRequest.Builder().build(),
-        object : RewardedAdLoadCallback() {
-          override fun onAdLoaded(ad: RewardedAd) {
-            isLoadingRewarded = false
-            rewardedAd = ad
-            Log.d("AdMobController", "RewardedAd loaded")
-          }
+  fun loadRewardedAd() {}
 
-          override fun onAdFailedToLoad(error: LoadAdError) {
-            isLoadingRewarded = false
-            rewardedAd = null
-            Log.w("AdMobController", "RewardedAd load failed: ${error.message}")
-          }
-        }
-      )
-    }.onFailure {
-      isLoadingRewarded = false
-    }
-  }
-
-  fun loadInterstitialAd() {
-    if (interstitialAd != null || isLoadingInterstitial) return
-    isLoadingInterstitial = true
-    val unitId = activity.getString(R.string.admob_interstitial_id)
-    runCatching {
-      InterstitialAd.load(
-        activity,
-        unitId,
-        AdRequest.Builder().build(),
-        object : InterstitialAdLoadCallback() {
-          override fun onAdLoaded(ad: InterstitialAd) {
-            isLoadingInterstitial = false
-            interstitialAd = ad
-            Log.d("AdMobController", "InterstitialAd loaded")
-          }
-
-          override fun onAdFailedToLoad(error: LoadAdError) {
-            isLoadingInterstitial = false
-            interstitialAd = null
-            Log.w("AdMobController", "InterstitialAd load failed: ${error.message}")
-          }
-        }
-      )
-    }.onFailure {
-      isLoadingInterstitial = false
-    }
-  }
+  fun loadInterstitialAd() {}
 
   fun showRewardedAd(
     webView: WebView,
@@ -189,43 +169,10 @@ class AdMobController(private val activity: Activity) {
   ) {
     val placement = rawPlacement.replace(Regex("[^a-zA-Z0-9_]"), "")
     mainHandler.post {
-      val ad = rewardedAd
-      if (ad == null) {
-        loadRewardedAd()
-        webView.evaluateJavascript(
-          "window.__onRewardedAdResult && window.__onRewardedAdResult('$placement', false, 'loading')",
-          null
-        )
-        return@post
-      }
-
-      var rewardEarned = false
-      webView.evaluateJavascript("window.__onAdWillShow && window.__onAdWillShow()", null)
-
-      ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-        override fun onAdDismissedFullScreenContent() {
-          rewardedAd = null
-          loadRewardedAd()
-          webView.evaluateJavascript(
-            "window.__onRewardedAdResult && window.__onRewardedAdResult('$placement', $rewardEarned, 'dismissed')",
-            null
-          )
-        }
-
-        override fun onAdFailedToShowFullScreenContent(error: AdError) {
-          rewardedAd = null
-          loadRewardedAd()
-          webView.evaluateJavascript(
-            "window.__onRewardedAdResult && window.__onRewardedAdResult('$placement', false, 'failed')",
-            null
-          )
-        }
-      }
-
-      rewardedAd = null
-      ad.show(activity) {
-        rewardEarned = true
-      }
+      webView.evaluateJavascript(
+        "window.__onRewardedAdResult && window.__onRewardedAdResult('$placement', true, 'bypassed')",
+        null
+      )
     }
   }
 
@@ -235,48 +182,14 @@ class AdMobController(private val activity: Activity) {
   ) {
     val actionTag = rawActionTag.replace(Regex("[^a-zA-Z0-9_]"), "")
     mainHandler.post {
-      val ad = interstitialAd
-      if (ad == null) {
-        loadInterstitialAd()
-        webView.evaluateJavascript(
-          "window.__onInterstitialAdClosed && window.__onInterstitialAdClosed('$actionTag')",
-          null
-        )
-        return@post
-      }
-
-      webView.evaluateJavascript("window.__onAdWillShow && window.__onAdWillShow()", null)
-
-      ad.fullScreenContentCallback = object : FullScreenContentCallback() {
-        override fun onAdDismissedFullScreenContent() {
-          interstitialAd = null
-          loadInterstitialAd()
-          webView.evaluateJavascript(
-            "window.__onInterstitialAdClosed && window.__onInterstitialAdClosed('$actionTag')",
-            null
-          )
-        }
-
-        override fun onAdFailedToShowFullScreenContent(error: AdError) {
-          interstitialAd = null
-          loadInterstitialAd()
-          webView.evaluateJavascript(
-            "window.__onInterstitialAdClosed && window.__onInterstitialAdClosed('$actionTag')",
-            null
-          )
-        }
-      }
-
-      interstitialAd = null
-      ad.show(activity)
+      webView.evaluateJavascript(
+        "window.__onInterstitialAdClosed && window.__onInterstitialAdClosed('$actionTag')",
+        null
+      )
     }
   }
-  fun preloadAll() {
-    mainHandler.post {
-      loadRewardedAd()
-      loadInterstitialAd()
-    }
-  }
+
+  fun preloadAll() {}
 }
 
 private class AndroidAdsBridge(
@@ -315,6 +228,100 @@ private class AndroidBackBridge(
   @JavascriptInterface
   fun setBackInterceptEnabled(enabled: Boolean) {
     mainHandler.post { onBackStateChanged(enabled) }
+  }
+}
+
+private class AndroidAppBridge(
+  private val activity: Activity?
+) {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  @JavascriptInterface
+  fun quitApp() {
+    mainHandler.post {
+      activity?.finishAffinity()
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  @JavascriptInterface
+  fun vibrate(durationMs: Long, intensityPercent: Int) {
+    val ctx = activity ?: return
+    val clampedPct = intensityPercent.coerceIn(0, 100)
+    if (clampedPct <= 0 || durationMs <= 0L) return
+    val safeDuration = durationMs.coerceIn(10L, 400L)
+    runCatching {
+      val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val mgr = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+        mgr?.defaultVibrator
+      } else {
+        ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+      }
+      if (vibrator == null || !vibrator.hasVibrator()) return
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val amplitude = ((clampedPct / 100f) * 255f).toInt().coerceIn(1, 255)
+        vibrator.vibrate(VibrationEffect.createOneShot(safeDuration, amplitude))
+      } else {
+        val scaledMs = ((safeDuration * clampedPct) / 100L).coerceAtLeast(10L)
+        vibrator.vibrate(scaledMs)
+      }
+    }
+  }
+
+  @JavascriptInterface
+  fun getAppVersion(): String = BuildConfig.VERSION_NAME
+
+  @JavascriptInterface
+  fun copyToClipboard(label: String, text: String) {
+    val ctx = activity ?: return
+    mainHandler.post {
+      runCatching {
+        val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText(label.ifBlank { "Thorn Rush" }, text))
+      }
+    }
+  }
+
+  @JavascriptInterface
+  fun openSupportEmail(email: String, subject: String, body: String) {
+    val ctx = activity ?: return
+    val safeEmail = email.trim().ifBlank { "luqmanthair260@gmail.com" }
+    mainHandler.post {
+      runCatching {
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+          data = Uri.parse("mailto:$safeEmail")
+          putExtra(Intent.EXTRA_EMAIL, arrayOf(safeEmail))
+          putExtra(Intent.EXTRA_SUBJECT, subject)
+          putExtra(Intent.EXTRA_TEXT, body)
+        }
+        ctx.startActivity(Intent.createChooser(intent, "Contact Support"))
+      }.onFailure {
+        runCatching {
+          val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+          clipboard?.setPrimaryClip(ClipData.newPlainText("Support Email", safeEmail))
+        }
+        Toast.makeText(
+          ctx,
+          "No email app found. Copied $safeEmail to clipboard.",
+          Toast.LENGTH_LONG
+        ).show()
+      }
+    }
+  }
+
+  @JavascriptInterface
+  fun openExternalUrl(url: String) {
+    val ctx = activity ?: return
+    val trimmed = url.trim()
+    if (!trimmed.startsWith("https://")) return
+    mainHandler.post {
+      runCatching {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmed))
+        ctx.startActivity(intent)
+      }.onFailure {
+        Toast.makeText(ctx, "Unable to open link on this device.", Toast.LENGTH_SHORT).show()
+      }
+    }
   }
 }
 
@@ -363,6 +370,10 @@ fun SkyCarGameView(
       addJavascriptInterface(
         AndroidAdsBridge(adController) { this },
         "AndroidAdsBridge"
+      )
+      addJavascriptInterface(
+        AndroidAppBridge(context as? Activity),
+        "AndroidAppBridge"
       )
 
       webChromeClient = object : WebChromeClient() {
